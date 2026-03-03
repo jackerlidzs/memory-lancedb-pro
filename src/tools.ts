@@ -26,6 +26,12 @@ interface ToolContext {
   agentId?: string;
 }
 
+function resolveAgentId(runtimeAgentId: unknown, fallback?: string): string | undefined {
+  if (typeof runtimeAgentId === "string" && runtimeAgentId.trim().length > 0) return runtimeAgentId;
+  if (typeof fallback === "string" && fallback.trim().length > 0) return fallback;
+  return undefined;
+}
+
 // ============================================================================
 // Utility Functions
 // ============================================================================
@@ -58,8 +64,10 @@ function sanitizeMemoryForSerialization(results: RetrievalResult[]) {
 
 export function registerMemoryRecallTool(api: OpenClawPluginApi, context: ToolContext) {
   api.registerTool(
-    {
-      name: "memory_recall",
+    (toolCtx) => {
+      const agentId = resolveAgentId((toolCtx as any)?.agentId, context.agentId) ?? "main";
+      return {
+        name: "memory_recall",
       label: "Memory Recall",
       description: "Search through long-term memories using hybrid retrieval (vector + keyword search). Use when you need context about user preferences, past decisions, or previously discussed topics.",
       parameters: Type.Object({
@@ -80,9 +88,9 @@ export function registerMemoryRecallTool(api: OpenClawPluginApi, context: ToolCo
           const safeLimit = clampInt(limit, 1, 20);
 
           // Determine accessible scopes
-          let scopeFilter = context.scopeManager.getAccessibleScopes(context.agentId);
+          let scopeFilter = context.scopeManager.getAccessibleScopes(agentId);
           if (scope) {
-            if (context.scopeManager.isAccessible(scope, context.agentId)) {
+            if (context.scopeManager.isAccessible(scope, agentId)) {
               scopeFilter = [scope];
             } else {
               return {
@@ -134,6 +142,7 @@ export function registerMemoryRecallTool(api: OpenClawPluginApi, context: ToolCo
           };
         }
       },
+    };
     },
     { name: "memory_recall" }
   );
@@ -141,8 +150,10 @@ export function registerMemoryRecallTool(api: OpenClawPluginApi, context: ToolCo
 
 export function registerMemoryStoreTool(api: OpenClawPluginApi, context: ToolContext) {
   api.registerTool(
-    {
-      name: "memory_store",
+    (toolCtx) => {
+      const agentId = resolveAgentId((toolCtx as any)?.agentId, context.agentId) ?? "main";
+      return {
+        name: "memory_store",
       label: "Memory Store",
       description: "Save important information in long-term memory. Use for preferences, facts, decisions, and other notable information.",
       parameters: Type.Object({
@@ -166,10 +177,10 @@ export function registerMemoryStoreTool(api: OpenClawPluginApi, context: ToolCon
 
         try {
           // Determine target scope
-          let targetScope = scope || context.scopeManager.getDefaultScope(context.agentId);
+          let targetScope = scope || context.scopeManager.getDefaultScope(agentId);
 
           // Validate scope access
-          if (!context.scopeManager.isAccessible(targetScope, context.agentId)) {
+          if (!context.scopeManager.isAccessible(targetScope, agentId)) {
             return {
               content: [{ type: "text", text: `Access denied to scope: ${targetScope}` }],
               details: { error: "scope_access_denied", requestedScope: targetScope },
@@ -233,6 +244,7 @@ export function registerMemoryStoreTool(api: OpenClawPluginApi, context: ToolCon
           };
         }
       },
+    };
     },
     { name: "memory_store" }
   );
@@ -240,8 +252,10 @@ export function registerMemoryStoreTool(api: OpenClawPluginApi, context: ToolCon
 
 export function registerMemoryForgetTool(api: OpenClawPluginApi, context: ToolContext) {
   api.registerTool(
-    {
-      name: "memory_forget",
+    (toolCtx) => {
+      const agentId = resolveAgentId((toolCtx as any)?.agentId, context.agentId) ?? "main";
+      return {
+        name: "memory_forget",
       label: "Memory Forget",
       description: "Delete specific memories. Supports both search-based and direct ID-based deletion.",
       parameters: Type.Object({
@@ -258,9 +272,9 @@ export function registerMemoryForgetTool(api: OpenClawPluginApi, context: ToolCo
 
         try {
           // Determine accessible scopes
-          let scopeFilter = context.scopeManager.getAccessibleScopes(context.agentId);
+          let scopeFilter = context.scopeManager.getAccessibleScopes(agentId);
           if (scope) {
-            if (context.scopeManager.isAccessible(scope, context.agentId)) {
+            if (context.scopeManager.isAccessible(scope, agentId)) {
               scopeFilter = [scope];
             } else {
               return {
@@ -338,6 +352,7 @@ export function registerMemoryForgetTool(api: OpenClawPluginApi, context: ToolCo
           };
         }
       },
+    };
     },
     { name: "memory_forget" }
   );
@@ -349,8 +364,10 @@ export function registerMemoryForgetTool(api: OpenClawPluginApi, context: ToolCo
 
 export function registerMemoryUpdateTool(api: OpenClawPluginApi, context: ToolContext) {
   api.registerTool(
-    {
-      name: "memory_update",
+    (toolCtx) => {
+      const agentId = resolveAgentId((toolCtx as any)?.agentId, context.agentId) ?? "main";
+      return {
+        name: "memory_update",
       label: "Memory Update",
       description: "Update an existing memory in-place. Preserves original timestamp. Use when correcting outdated info or adjusting importance/category without losing creation date.",
       parameters: Type.Object({
@@ -376,7 +393,7 @@ export function registerMemoryUpdateTool(api: OpenClawPluginApi, context: ToolCo
           }
 
           // Determine accessible scopes
-          const scopeFilter = context.scopeManager.getAccessibleScopes(context.agentId);
+          const scopeFilter = context.scopeManager.getAccessibleScopes(agentId);
 
           // Resolve memoryId: if it doesn't look like a UUID, try search
           let resolvedId = memoryId;
@@ -452,6 +469,7 @@ export function registerMemoryUpdateTool(api: OpenClawPluginApi, context: ToolCo
           };
         }
       },
+    };
     },
     { name: "memory_update" }
   );
@@ -463,8 +481,10 @@ export function registerMemoryUpdateTool(api: OpenClawPluginApi, context: ToolCo
 
 export function registerMemoryStatsTool(api: OpenClawPluginApi, context: ToolContext) {
   api.registerTool(
-    {
-      name: "memory_stats",
+    (toolCtx) => {
+      const agentId = resolveAgentId((toolCtx as any)?.agentId, context.agentId) ?? "main";
+      return {
+        name: "memory_stats",
       label: "Memory Statistics",
       description: "Get statistics about memory usage, scopes, and categories.",
       parameters: Type.Object({
@@ -475,9 +495,9 @@ export function registerMemoryStatsTool(api: OpenClawPluginApi, context: ToolCon
 
         try {
           // Determine accessible scopes
-          let scopeFilter = context.scopeManager.getAccessibleScopes(context.agentId);
+          let scopeFilter = context.scopeManager.getAccessibleScopes(agentId);
           if (scope) {
-            if (context.scopeManager.isAccessible(scope, context.agentId)) {
+            if (context.scopeManager.isAccessible(scope, agentId)) {
               scopeFilter = [scope];
             } else {
               return {
@@ -524,6 +544,7 @@ export function registerMemoryStatsTool(api: OpenClawPluginApi, context: ToolCon
           };
         }
       },
+    };
     },
     { name: "memory_stats" }
   );
@@ -531,8 +552,10 @@ export function registerMemoryStatsTool(api: OpenClawPluginApi, context: ToolCon
 
 export function registerMemoryListTool(api: OpenClawPluginApi, context: ToolContext) {
   api.registerTool(
-    {
-      name: "memory_list",
+    (toolCtx) => {
+      const agentId = resolveAgentId((toolCtx as any)?.agentId, context.agentId) ?? "main";
+      return {
+        name: "memory_list",
       label: "Memory List",
       description: "List recent memories with optional filtering by scope and category.",
       parameters: Type.Object({
@@ -559,9 +582,9 @@ export function registerMemoryListTool(api: OpenClawPluginApi, context: ToolCont
           const safeOffset = clampInt(offset, 0, 1000);
 
           // Determine accessible scopes
-          let scopeFilter = context.scopeManager.getAccessibleScopes(context.agentId);
+          let scopeFilter = context.scopeManager.getAccessibleScopes(agentId);
           if (scope) {
-            if (context.scopeManager.isAccessible(scope, context.agentId)) {
+            if (context.scopeManager.isAccessible(scope, agentId)) {
               scopeFilter = [scope];
             } else {
               return {
@@ -609,6 +632,7 @@ export function registerMemoryListTool(api: OpenClawPluginApi, context: ToolCont
           };
         }
       },
+    };
     },
     { name: "memory_list" }
   );

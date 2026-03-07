@@ -225,7 +225,29 @@ Query → BM25 FTS ─────┘
   - `mdMirror.enabled`：是否开启双写（默认 `false`）。
   - `mdMirror.dir`：Markdown 镜像回退目录。
 
-### 11. 自动捕获 & 自动回忆
+### 11. 长文本分块嵌入（Long Context Chunking）
+
+自动处理超出 Embedding 模型上下文限制的长文本：
+
+- **智能分割**：在句子边界分块，支持可配置重叠区（默认 200 字符）
+- **平均嵌入**：分别 embed 每个块，再取平均向量保留语义
+- **优雅降级**：检测到 "Input length exceeds context length" 时自动重试分块
+- **配置开关**：`embedding.chunking` — 设为 `false` 可关闭（默认：遇到上下文超限自动开启）
+- **适配各模型限制**：Jina（8192 tokens）、OpenAI（8191）、Gemini（2048）等
+
+详细实现参见 [`docs/long-context-chunking.md`](docs/long-context-chunking.md)。
+
+### 12. Embedding 错误诊断
+
+当 Embedding 调用失败时，插件提供**可操作的错误提示**，而非笼统的报错信息：
+
+- **认证错误**（401/403）：提示检查 API key 有效性和格式
+- **网络错误**（ECONNREFUSED、ETIMEDOUT）：提示检查 `baseURL` 和网络连通性
+- **频率限制**（429）：建议重试或升级套餐
+- **模型未找到**（404）：建议核对模型名称是否与提供商文档一致
+- **上下文超长**：自动重试分块嵌入（见上文）
+
+### 13. 自动捕获 & 自动回忆
 
 - **Auto-Capture**（`agent_end` hook）: 从对话中提取 preference/fact/decision/entity，去重后存储（每次最多 3 条）
   - 触发词支持 **简体中文 + 繁體中文**（例如：记住/記住、偏好/喜好/喜歡、决定/決定 等）

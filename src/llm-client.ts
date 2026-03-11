@@ -6,11 +6,19 @@
 import OpenAI from "openai";
 
 export interface LlmClientConfig {
-  apiKey: string;
+  apiKey?: string;
   model: string;
   baseURL?: string;
   timeoutMs?: number;
   log?: (msg: string) => void;
+  /** When set to 'google-vertex', uses Vertex AI generateContent API. */
+  provider?: "google-vertex";
+  /** Google Cloud project ID (required for google-vertex). */
+  projectId?: string;
+  /** Google Cloud region (required for google-vertex). */
+  location?: string;
+  /** Path to Service Account JSON key file (required for google-vertex). */
+  credentials?: string;
 }
 
 export interface LlmClient {
@@ -57,6 +65,28 @@ function previewText(value: string, maxLen = 200): string {
 }
 
 export function createLlmClient(config: LlmClientConfig): LlmClient {
+  // Dispatch to Vertex AI LLM client when provider is google-vertex
+  if (config.provider === "google-vertex") {
+    if (!config.projectId || !config.location || !config.credentials) {
+      throw new Error(
+        "google-vertex LLM provider requires projectId, location, and credentials in llm config"
+      );
+    }
+    const { createVertexLlmClient } = require("./vertex-ai-client.js");
+    return createVertexLlmClient({
+      projectId: config.projectId,
+      location: config.location,
+      model: config.model,
+      credentials: config.credentials,
+      timeoutMs: config.timeoutMs,
+      log: config.log,
+    });
+  }
+
+  // Default: OpenAI-compatible
+  if (!config.apiKey) {
+    throw new Error("apiKey is required for OpenAI-compatible LLM provider");
+  }
   const client = new OpenAI({
     apiKey: config.apiKey,
     baseURL: config.baseURL,

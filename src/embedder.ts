@@ -83,7 +83,7 @@ class EmbeddingCache {
 // Types & Configuration
 // ============================================================================
 
-export interface EmbeddingConfig {
+export interface EmbeddingConfigOpenAI {
   provider: "openai-compatible";
   /** Single API key or array of keys for round-robin rotation with failover. */
   apiKey: string | string[];
@@ -101,6 +101,22 @@ export interface EmbeddingConfig {
   chunking?: boolean;
 }
 
+export interface EmbeddingConfigVertex {
+  provider: "google-vertex";
+  projectId: string;
+  location: string;
+  model: string;
+  /** Path to Service Account JSON key file, JSON content, or ${ENV_VAR} reference. */
+  credentials: string;
+  dimensions?: number;
+  /** Task type for query embeddings (e.g. "RETRIEVAL_QUERY") */
+  taskQuery?: string;
+  /** Task type for passage/document embeddings (e.g. "RETRIEVAL_DOCUMENT") */
+  taskPassage?: string;
+}
+
+export type EmbeddingConfig = EmbeddingConfigOpenAI | EmbeddingConfigVertex;
+
 // Known embedding model dimensions
 const EMBEDDING_DIMENSIONS: Record<string, number> = {
   "text-embedding-3-small": 1536,
@@ -116,6 +132,10 @@ const EMBEDDING_DIMENSIONS: Record<string, number> = {
   // Jina v5
   "jina-embeddings-v5-text-small": 1024,
   "jina-embeddings-v5-text-nano": 768,
+
+  // Google Vertex AI
+  "text-embedding-005": 768,
+  "text-multilingual-embedding-002": 768,
 };
 
 // ============================================================================
@@ -287,7 +307,7 @@ export class Embedder {
   /** Enable automatic chunking for long documents (default: true) */
   private readonly _autoChunk: boolean;
 
-  constructor(config: EmbeddingConfig & { chunking?: boolean }) {
+  constructor(config: EmbeddingConfigOpenAI & { chunking?: boolean }) {
     // Normalize apiKey to array and resolve environment variables
     const apiKeys = Array.isArray(config.apiKey) ? config.apiKey : [config.apiKey];
     const resolvedKeys = apiKeys.map(k => resolveEnvVars(k));
@@ -713,6 +733,32 @@ export class Embedder {
 // Factory Function
 // ============================================================================
 
-export function createEmbedder(config: EmbeddingConfig): Embedder {
+/**
+ * Create an embedder based on the provider config.
+ * Returns either an OpenAI-compatible Embedder or a VertexEmbedder.
+ * Both share the same public API surface.
+ */
+export function createEmbedder(config: EmbeddingConfig): Embedder | VertexEmbedderType {
+  if (config.provider === "google-vertex") {
+    // Lazy-load vertex-ai-client only when google-vertex provider is used
+    const { VertexEmbedder } = require("./vertex-ai-client.js");
+    return new VertexEmbedder(config) as VertexEmbedderType;
+  }
   return new Embedder(config);
 }
+
+/** Type alias for VertexEmbedder — avoids top-level import when not used. */
+type VertexEmbedderType = {
+  readonly dimensions: number;
+  readonly model: string;
+  readonly keyCount: number;
+  embed(text: string): Promise<number[]>;
+  embedBatch(texts: string[]): Promise<number[][]>;
+  embedQuery(text: string): Promise<number[]>;
+  embedPassage(text: string): Promise<number[]>;
+  embedBatchQuery(texts: string[]): Promise<number[][]>;
+  embedBatchPassage(texts: string[]): Promise<number[][]>;
+  test(): Promise<{ success: boolean; error?: string; dimensions?: number }>;
+  readonly cacheStats: { size: number; hits: number; misses: number; hitRate: string; keyCount: number };
+};
+

@@ -59,8 +59,9 @@ import {
 
 interface PluginConfig {
   embedding: {
-    provider: "openai-compatible";
-    apiKey: string | string[];
+    provider?: "openai-compatible" | "google-vertex";
+    // OpenAI-compatible fields
+    apiKey?: string | string[];
     model?: string;
     baseURL?: string;
     dimensions?: number;
@@ -68,6 +69,10 @@ interface PluginConfig {
     taskPassage?: string;
     normalized?: boolean;
     chunking?: boolean;
+    // Google Vertex AI fields
+    projectId?: string;
+    location?: string;
+    credentials?: string;
   };
   dbPath?: string;
   autoCapture?: boolean;
@@ -122,9 +127,14 @@ interface PluginConfig {
   // Smart extraction config
   smartExtraction?: boolean;
   llm?: {
+    provider?: "google-vertex";
     apiKey?: string;
     model?: string;
     baseURL?: string;
+    // Google Vertex AI fields
+    projectId?: string;
+    location?: string;
+    credentials?: string;
   };
   extractMinMessages?: number;
   extractMaxChars?: number;
@@ -1598,24 +1608,54 @@ const memoryLanceDBProPlugin = {
       );
     }
 
+    // Initialize core components — dispatch based on provider
+    const isVertexEmbedding = config.embedding.provider === "google-vertex";
+    const embeddingModel = config.embedding.model || (isVertexEmbedding ? "text-embedding-005" : "text-embedding-3-small");
+
     const vectorDim = getVectorDimensions(
-      config.embedding.model || "text-embedding-3-small",
+      embeddingModel,
       config.embedding.dimensions,
     );
 
-    // Initialize core components
     const store = new MemoryStore({ dbPath: resolvedDbPath, vectorDim });
-    const embedder = createEmbedder({
-      provider: "openai-compatible",
-      apiKey: config.embedding.apiKey,
-      model: config.embedding.model || "text-embedding-3-small",
-      baseURL: config.embedding.baseURL,
-      dimensions: config.embedding.dimensions,
-      taskQuery: config.embedding.taskQuery,
-      taskPassage: config.embedding.taskPassage,
-      normalized: config.embedding.normalized,
-      chunking: config.embedding.chunking,
-    });
+
+    let embedder: ReturnType<typeof createEmbedder>;
+    if (isVertexEmbedding) {
+      // Google Vertex AI provider
+      if (!config.embedding.projectId || !config.embedding.location || !config.embedding.credentials) {
+        throw new Error(
+          "memory-lancedb-pro: google-vertex embedding provider requires projectId, location, and credentials"
+        );
+      }
+      embedder = createEmbedder({
+        provider: "google-vertex",
+        projectId: config.embedding.projectId,
+        location: config.embedding.location,
+        model: embeddingModel,
+        credentials: config.embedding.credentials,
+        dimensions: config.embedding.dimensions,
+        taskQuery: config.embedding.taskQuery,
+        taskPassage: config.embedding.taskPassage,
+      });
+    } else {
+      // OpenAI-compatible provider (default)
+      if (!config.embedding.apiKey) {
+        throw new Error(
+          "memory-lancedb-pro: openai-compatible embedding provider requires apiKey"
+        );
+      }
+      embedder = createEmbedder({
+        provider: "openai-compatible",
+        apiKey: config.embedding.apiKey,
+        model: embeddingModel,
+        baseURL: config.embedding.baseURL,
+        dimensions: config.embedding.dimensions,
+        taskQuery: config.embedding.taskQuery,
+        taskPassage: config.embedding.taskPassage,
+        normalized: config.embedding.normalized,
+        chunking: config.embedding.chunking,
+      });
+    }
     // Initialize decay engine
     const decayEngine = createDecayEngine({
       ...DEFAULT_DECAY_CONFIG,
@@ -1627,7 +1667,7 @@ const memoryLanceDBProPlugin = {
     });
     const retriever = createRetriever(
       store,
-      embedder,
+      embedder as any,
       {
         ...DEFAULT_RETRIEVAL_CONFIG,
         ...config.retrieval,
@@ -1641,31 +1681,72 @@ const memoryLanceDBProPlugin = {
     let smartExtractor: SmartExtractor | null = null;
     if (config.smartExtraction !== false) {
       try {
-        const llmApiKey = config.llm?.apiKey
-          ? resolveEnvVars(config.llm.apiKey)
-          : resolveEnvVars(config.embedding.apiKey);
-        const llmBaseURL = config.llm?.baseURL
-          ? resolveEnvVars(config.llm.baseURL)
-          : config.embedding.baseURL;
-        const llmModel = config.llm?.model || "openai/gpt-oss-120b";
+        // Auto-detect LLM provider: explicit llm.provider > inherit from embedding provider
+        const isVertexLlm = config.llm?.provider === "google-vertex"
+          || (!config.llm?.provider && isVertexEmbedding);
+        let llmClientInstance;
+        const llmModel = isVertexLlm
+          ? (config.llm?.model || "gemini-2.0-flash")
+          : (config.llm?.model || "openai/gpt-oss-120b");
 
-        const llmClient = createLlmClient({
-          apiKey: llmApiKey,
-          model: llmModel,
-          baseURL: llmBaseURL,
-          timeoutMs: 30000,
-          log: (msg: string) => api.logger.debug(msg),
-        });
+        if (isVertexLlm) {
+          // Google Vertex AI LLM — inherit from embedding config if not specified
+          const llmProjectId = config.llm?.projectId || config.embedding.projectId;
+          const llmLocation = config.llm?.location || config.embedding.location;
+          const llmCredentials = config.llm?.credentials || config.embedding.credentials;
+
+          if (!llmProjectId || !llmLocation || !llmCredentials) {
+            throw new Error(
+              "google-vertex LLM provider requires projectId, location, and credentials"
+            );
+          }
+
+          llmClientInstance = createLlmClient({
+            provider: "google-vertex",
+            projectId: llmProjectId,
+            location: llmLocation,
+            credentials: llmCredentials,
+            model: llmModel,
+            timeoutMs: 30000,
+            log: (msg: string) => api.logger.debug(msg),
+          });
+        } else {
+          // OpenAI-compatible LLM (default)
+          const llmApiKey = config.llm?.apiKey
+            ? resolveEnvVars(config.llm.apiKey)
+            : (config.embedding.apiKey ? resolveEnvVars(
+                Array.isArray(config.embedding.apiKey) ? config.embedding.apiKey[0] : config.embedding.apiKey
+              ) : undefined);
+          const llmBaseURL = config.llm?.baseURL
+            ? resolveEnvVars(config.llm.baseURL)
+            : config.embedding.baseURL;
+
+          if (!llmApiKey) {
+            throw new Error(
+              "Smart extraction requires an LLM API key (set llm.apiKey or embedding.apiKey)"
+            );
+          }
+
+          llmClientInstance = createLlmClient({
+            apiKey: llmApiKey,
+            model: llmModel,
+            baseURL: llmBaseURL,
+            timeoutMs: 30000,
+            log: (msg: string) => api.logger.debug(msg),
+          });
+        }
+
+        const llmClient = llmClientInstance;
 
         // Initialize embedding-based noise prototype bank (async, non-blocking)
         const noiseBank = new NoisePrototypeBank(
           (msg: string) => api.logger.debug(msg),
         );
-        noiseBank.init(embedder).catch((err) =>
+        noiseBank.init(embedder as any).catch((err) =>
           api.logger.debug(`memory-lancedb-pro: noise bank init: ${String(err)}`),
         );
 
-        smartExtractor = new SmartExtractor(store, embedder, llmClient, {
+        smartExtractor = new SmartExtractor(store, embedder as any, llmClient, {
           user: "User",
           extractMinMessages: config.extractMinMessages ?? 2,
           extractMaxChars: config.extractMaxChars ?? 8000,
@@ -1935,7 +2016,7 @@ const memoryLanceDBProPlugin = {
         retriever,
         store,
         scopeManager,
-        embedder,
+        embedder: embedder as any,
         agentId: undefined, // Will be determined at runtime from context
         workspaceDir: getDefaultWorkspaceDir(),
         mdMirror,
@@ -1956,21 +2037,41 @@ const memoryLanceDBProPlugin = {
         retriever,
         scopeManager,
         migrator,
-        embedder,
+        embedder: embedder as any,
         llmClient: smartExtractor ? (() => {
           try {
-            const llmApiKey = config.llm?.apiKey
-              ? resolveEnvVars(config.llm.apiKey)
-              : resolveEnvVars(config.embedding.apiKey);
-            const llmBaseURL = config.llm?.baseURL
-              ? resolveEnvVars(config.llm.baseURL)
-              : config.embedding.baseURL;
-            return createLlmClient({
-              apiKey: llmApiKey,
-              model: config.llm?.model || "openai/gpt-oss-120b",
-              baseURL: llmBaseURL,
-              timeoutMs: 30000,
-            });
+            const isVertexLlm = config.llm?.provider === "google-vertex"
+              || (!config.llm?.provider && isVertexEmbedding);
+            if (isVertexLlm) {
+              const llmProjectId = config.llm?.projectId || config.embedding.projectId;
+              const llmLocation = config.llm?.location || config.embedding.location;
+              const llmCredentials = config.llm?.credentials || config.embedding.credentials;
+              if (!llmProjectId || !llmLocation || !llmCredentials) return undefined;
+              return createLlmClient({
+                provider: "google-vertex",
+                projectId: llmProjectId,
+                location: llmLocation,
+                credentials: llmCredentials,
+                model: config.llm?.model || "gemini-2.0-flash",
+                timeoutMs: 30000,
+              });
+            } else {
+              const llmApiKey = config.llm?.apiKey
+                ? resolveEnvVars(config.llm.apiKey)
+                : (config.embedding.apiKey ? resolveEnvVars(
+                    Array.isArray(config.embedding.apiKey) ? config.embedding.apiKey[0] : config.embedding.apiKey
+                  ) : undefined);
+              if (!llmApiKey) return undefined;
+              const llmBaseURL = config.llm?.baseURL
+                ? resolveEnvVars(config.llm.baseURL)
+                : config.embedding.baseURL;
+              return createLlmClient({
+                apiKey: llmApiKey,
+                model: config.llm?.model || "openai/gpt-oss-120b",
+                baseURL: llmBaseURL,
+                timeoutMs: 30000,
+              });
+            }
           } catch { return undefined; }
         })() : undefined,
       }),

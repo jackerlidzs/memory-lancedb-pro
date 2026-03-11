@@ -3261,30 +3261,97 @@ export function parsePluginConfig(value: unknown): PluginConfig {
     throw new Error("embedding config is required");
   }
 
-  // Accept single key (string) or array of keys for round-robin rotation
-  let apiKey: string | string[];
-  if (typeof embedding.apiKey === "string") {
-    apiKey = embedding.apiKey;
-  } else if (Array.isArray(embedding.apiKey) && embedding.apiKey.length > 0) {
-    // Validate every element is a non-empty string
-    const invalid = embedding.apiKey.findIndex(
-      (k: unknown) => typeof k !== "string" || (k as string).trim().length === 0,
-    );
-    if (invalid !== -1) {
+  // Detect provider
+  const provider = embedding.provider === "google-vertex" ? "google-vertex" as const : "openai-compatible" as const;
+
+  // Provider-specific validation and parsing
+  let embeddingConfig: PluginConfig["embedding"];
+
+  if (provider === "google-vertex") {
+    // Google Vertex AI provider — requires projectId, location, credentials (no apiKey needed)
+    const projectId = typeof embedding.projectId === "string" ? embedding.projectId : undefined;
+    const location = typeof embedding.location === "string" ? embedding.location : undefined;
+    const credentials = typeof embedding.credentials === "string" ? embedding.credentials : undefined;
+
+    if (!projectId || !location || !credentials) {
       throw new Error(
-        `embedding.apiKey[${invalid}] is invalid: expected non-empty string`,
+        "google-vertex embedding provider requires projectId, location, and credentials"
       );
     }
-    apiKey = embedding.apiKey as string[];
-  } else if (embedding.apiKey !== undefined) {
-    // apiKey is present but wrong type — throw, don't silently fall back
-    throw new Error("embedding.apiKey must be a string or non-empty array of strings");
-  } else {
-    apiKey = process.env.OPENAI_API_KEY || "";
-  }
 
-  if (!apiKey || (Array.isArray(apiKey) && apiKey.length === 0)) {
-    throw new Error("embedding.apiKey is required (set directly or via OPENAI_API_KEY env var)");
+    embeddingConfig = {
+      provider: "google-vertex",
+      projectId,
+      location,
+      credentials,
+      model:
+        typeof embedding.model === "string"
+          ? embedding.model
+          : "text-embedding-005",
+      dimensions: parsePositiveInt(embedding.dimensions ?? cfg.dimensions),
+      taskQuery:
+        typeof embedding.taskQuery === "string"
+          ? embedding.taskQuery
+          : undefined,
+      taskPassage:
+        typeof embedding.taskPassage === "string"
+          ? embedding.taskPassage
+          : undefined,
+    };
+  } else {
+    // OpenAI-compatible provider — requires apiKey
+    let apiKey: string | string[];
+    if (typeof embedding.apiKey === "string") {
+      apiKey = embedding.apiKey;
+    } else if (Array.isArray(embedding.apiKey) && embedding.apiKey.length > 0) {
+      const invalid = embedding.apiKey.findIndex(
+        (k: unknown) => typeof k !== "string" || (k as string).trim().length === 0,
+      );
+      if (invalid !== -1) {
+        throw new Error(
+          `embedding.apiKey[${invalid}] is invalid: expected non-empty string`,
+        );
+      }
+      apiKey = embedding.apiKey as string[];
+    } else if (embedding.apiKey !== undefined) {
+      throw new Error("embedding.apiKey must be a string or non-empty array of strings");
+    } else {
+      apiKey = process.env.OPENAI_API_KEY || "";
+    }
+
+    if (!apiKey || (Array.isArray(apiKey) && apiKey.length === 0)) {
+      throw new Error("embedding.apiKey is required (set directly or via OPENAI_API_KEY env var)");
+    }
+
+    embeddingConfig = {
+      provider: "openai-compatible",
+      apiKey,
+      model:
+        typeof embedding.model === "string"
+          ? embedding.model
+          : "text-embedding-3-small",
+      baseURL:
+        typeof embedding.baseURL === "string"
+          ? resolveEnvVars(embedding.baseURL)
+          : undefined,
+      dimensions: parsePositiveInt(embedding.dimensions ?? cfg.dimensions),
+      taskQuery:
+        typeof embedding.taskQuery === "string"
+          ? embedding.taskQuery
+          : undefined,
+      taskPassage:
+        typeof embedding.taskPassage === "string"
+          ? embedding.taskPassage
+          : undefined,
+      normalized:
+        typeof embedding.normalized === "boolean"
+          ? embedding.normalized
+          : undefined,
+      chunking:
+        typeof embedding.chunking === "boolean"
+          ? embedding.chunking
+          : undefined,
+    };
   }
 
   const memoryReflectionRaw = typeof cfg.memoryReflection === "object" && cfg.memoryReflection !== null
@@ -3314,37 +3381,7 @@ export function parsePluginConfig(value: unknown): PluginConfig {
     (memoryReflectionRaw?.storeToLanceDB !== false);
 
   return {
-    embedding: {
-      provider: "openai-compatible",
-      apiKey,
-      model:
-        typeof embedding.model === "string"
-          ? embedding.model
-          : "text-embedding-3-small",
-      baseURL:
-        typeof embedding.baseURL === "string"
-          ? resolveEnvVars(embedding.baseURL)
-          : undefined,
-      // Accept number, numeric string, or env-var string (e.g. "${EMBED_DIM}").
-      // Also accept legacy top-level `dimensions` for convenience.
-      dimensions: parsePositiveInt(embedding.dimensions ?? cfg.dimensions),
-      taskQuery:
-        typeof embedding.taskQuery === "string"
-          ? embedding.taskQuery
-          : undefined,
-      taskPassage:
-        typeof embedding.taskPassage === "string"
-          ? embedding.taskPassage
-          : undefined,
-      normalized:
-        typeof embedding.normalized === "boolean"
-          ? embedding.normalized
-          : undefined,
-      chunking:
-        typeof embedding.chunking === "boolean"
-          ? embedding.chunking
-          : undefined,
-    },
+    embedding: embeddingConfig,
     dbPath: typeof cfg.dbPath === "string" ? cfg.dbPath : undefined,
     autoCapture: cfg.autoCapture !== false,
     // Default OFF: only enable when explicitly set to true.

@@ -138,6 +138,8 @@ interface RetryConfig {
   baseDelayMs?: number;
   /** Max delay in ms (default: 10000) */
   maxDelayMs?: number;
+  /** Timeout in ms for each individual request (default: none) */
+  perRequestTimeoutMs?: number;
   /** Optional logger */
   log?: (msg: string) => void;
 }
@@ -145,6 +147,7 @@ interface RetryConfig {
 /**
  * Fetch with automatic retry on transient errors.
  * Uses exponential backoff with jitter. Respects Retry-After header.
+ * Each attempt gets its own timeout via AbortController.
  */
 async function fetchWithRetry(
   url: string,
@@ -154,13 +157,28 @@ async function fetchWithRetry(
   const maxRetries = config.maxRetries ?? 3;
   const baseDelayMs = config.baseDelayMs ?? 1000;
   const maxDelayMs = config.maxDelayMs ?? 10000;
+  const perRequestTimeoutMs = config.perRequestTimeoutMs;
   const log = config.log ?? (() => {});
 
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    // Create per-attempt AbortController if timeout is configured
+    let controller: AbortController | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    if (perRequestTimeoutMs && perRequestTimeoutMs > 0) {
+      controller = new AbortController();
+      timer = setTimeout(() => controller!.abort(), perRequestTimeoutMs);
+    }
+
+    // Merge signal: use per-attempt signal, or caller's signal, or none
+    const callerSignal = options.signal;
+    const signal = controller?.signal ?? callerSignal;
+
     try {
-      const response = await fetch(url, options);
+      const response = await fetch(url, { ...options, signal });
+
+      if (timer) clearTimeout(timer);
 
       // Success or non-retryable error — return immediately
       if (response.ok || !RETRYABLE_STATUS_CODES.has(response.status)) {
@@ -194,6 +212,8 @@ async function fetchWithRetry(
 
       await new Promise((resolve) => setTimeout(resolve, delay));
     } catch (err) {
+      if (timer) clearTimeout(timer);
+
       // Network error (DNS, timeout, connection refused, etc.)
       lastError = err instanceof Error ? err : new Error(String(err));
 
@@ -828,9 +848,6 @@ export function createVertexLlmClient(config: VertexLlmConfig): LlmClient {
       try {
         const accessToken = await auth.getAccessToken();
 
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), timeoutMs);
-
         try {
           const response = await fetchWithRetry(
             endpoint,
@@ -854,12 +871,9 @@ export function createVertexLlmClient(config: VertexLlmConfig): LlmClient {
                   responseMimeType: "application/json",
                 },
               }),
-              signal: controller.signal,
             },
-            { maxRetries: 2, log },
+            { maxRetries: 2, perRequestTimeoutMs: timeoutMs, log },
           );
-
-          clearTimeout(timer);
 
           if (!response.ok) {
             const errorText = await response.text().catch(() => "unknown");
@@ -896,7 +910,6 @@ export function createVertexLlmClient(config: VertexLlmConfig): LlmClient {
             return null;
           }
         } catch (err) {
-          clearTimeout(timer);
           throw err;
         }
       } catch (err) {

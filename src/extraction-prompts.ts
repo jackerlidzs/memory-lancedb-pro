@@ -33,6 +33,9 @@ ${conversationText}
 - Tool output, error logs, or boilerplate
 - Recall queries / meta-questions: "Do you remember X?", "你还记得X吗?", "你知道我喜欢什么吗" — these are retrieval requests, NOT new information to store
 - Degraded or incomplete references: If the user mentions something vaguely ("that thing I said"), do NOT invent details or create a hollow memory
+- System messages: Model switch notifications, session timestamps, heartbeat messages
+- Internal prompts: Memory flush instructions, compaction prompts, "reply with NO_REPLY"
+- Raw system output: "[timestamp] Model switched to X" is NOT user knowledge
 
 # Memory Classification
 
@@ -65,47 +68,57 @@ ${conversationText}
 
 # Three-Level Structure
 
-Each memory contains three levels:
+Each memory contains three levels. CRITICAL: Each level MUST contain DIFFERENT content. NEVER copy the same text across levels.
 
-**abstract (L0)**: One-liner index
+**abstract (L0)**: One-liner index (MAX 15 words). This is a short label/key, NOT a full sentence.
 - Merge types (preferences/entities/profile/patterns): \`[Merge key]: [Description]\`
-- Independent types (events/cases): Specific description
+- Independent types (events/cases): Short specific label
 
-**overview (L1)**: Structured Markdown summary with category-specific headings
+**overview (L1)**: Structured Markdown summary with bullet points and category-specific headings. Must use markdown formatting (##, -, bullet lists). Must be MORE structured than L0 and SHORTER than L2.
 
-**content (L2)**: Full narrative with background and details
+**content (L2)**: Full narrative paragraph with background context, reasoning, and complete details. Must be a proper sentence/paragraph, NOT a copy of L0.
 
 # Few-shot Examples
 
-## profile
+## profile — GOOD example (L0 ≠ L1 ≠ L2)
 \`\`\`json
 {
   "category": "profile",
-  "abstract": "User basic info: AI development engineer, 3 years LLM experience",
+  "abstract": "User: AI engineer, 3 years LLM experience",
   "overview": "## Background\\n- Occupation: AI development engineer\\n- Experience: 3 years LLM development\\n- Tech stack: Python, LangChain",
-  "content": "User is an AI development engineer with 3 years of LLM application development experience."
+  "content": "The user is a professional AI development engineer who has been working with Large Language Model applications for 3 years. Their primary tech stack includes Python and LangChain for building LLM-powered systems."
 }
 \`\`\`
 
-## preferences
+## preferences — GOOD example (L0 ≠ L1 ≠ L2)
 \`\`\`json
 {
   "category": "preferences",
-  "abstract": "Python code style: No type hints, concise and direct",
-  "overview": "## Preference Domain\\n- Language: Python\\n- Topic: Code style\\n\\n## Details\\n- No type hints\\n- Concise function comments\\n- Direct implementation",
-  "content": "User prefers Python code without type hints, with concise function comments."
+  "abstract": "Code style: no type hints, concise",
+  "overview": "## Preference Domain\\n- Language: Python\\n- Topic: Code style\\n\\n## Details\\n- No type hints\\n- Concise function comments\\n- Direct implementation over abstraction",
+  "content": "The user prefers writing Python code without type hints, favoring concise function comments and direct implementation patterns. They value readability through simplicity rather than verbose type annotations."
 }
 \`\`\`
 
-## cases
+## cases — GOOD example (L0 ≠ L1 ≠ L2)
 \`\`\`json
 {
   "category": "cases",
-  "abstract": "LanceDB BigInt error -> Use Number() coercion before arithmetic",
-  "overview": "## Problem\\nLanceDB 0.26+ returns BigInt for numeric columns\\n\\n## Solution\\nCoerce values with Number(...) before arithmetic",
-  "content": "When LanceDB returns BigInt values, wrap them with Number() before doing arithmetic operations."
+  "abstract": "LanceDB BigInt error → Number() coercion fix",
+  "overview": "## Problem\\nLanceDB 0.26+ returns BigInt for numeric columns, causing arithmetic errors\\n\\n## Solution\\nWrap values with Number() before arithmetic operations",
+  "content": "When upgrading to LanceDB 0.26+, numeric columns like timestamp and importance are returned as BigInt instead of Number. This causes TypeErrors when performing arithmetic. The fix is to coerce values with Number(value) before any math operations."
 }
 \`\`\`
+
+## BAD example — DO NOT do this (L0 = L1 = L2)
+\`\`\`json
+{
+  "abstract": "User prefers Python for AI development",
+  "overview": "User prefers Python for AI development",
+  "content": "User prefers Python for AI development"
+}
+\`\`\`
+This is WRONG because all three levels are identical copies. Each level must provide different granularity of information.
 
 # Output Format
 

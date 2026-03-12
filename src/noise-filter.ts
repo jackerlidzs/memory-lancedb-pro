@@ -43,6 +43,26 @@ const BOILERPLATE_PATTERNS = [
   /^HEARTBEAT/i,
 ];
 
+// System messages and model switch notifications
+const SYSTEM_MESSAGE_PATTERNS = [
+  /^System:\s*\[[\d-]+\s+[\d:]+\s*UTC\]\s*Model switched to/i,
+  /\bModel switched to\b.+\.\s*$/i,
+  /^System:\s*\[[\d-]+/i,
+  /^\[[\d-]+\s+[\d:]+\s*UTC\]\s*(Model|Session|System)/i,
+];
+
+// Internal prompts / memory management instructions (should never be stored as user knowledge)
+const INTERNAL_PROMPT_PATTERNS = [
+  /^Pre-compaction memory flush/i,
+  /\bStore durable memories now\b/i,
+  /\bcreate memory\/? if needed\b/i,
+  /\breply with NO_REPLY\b/i,
+  /\bAPPEND new content only\b/i,
+  /\bdo not overwrite existing entries\b/i,
+  /\bmemory flush\b.*\bstore\b/i,
+  /^\[?system\]?\s*instruction/i,
+];
+
 // Extractor artifacts from validation prompts / synthetic summaries
 const DIAGNOSTIC_ARTIFACT_PATTERNS = [
   /\bquery\s*->\s*(none|no explicit solution|unknown|not found)\b/i,
@@ -78,6 +98,8 @@ export function isNoise(text: string, options: NoiseFilterOptions = {}): boolean
   if (opts.filterDenials && DENIAL_PATTERNS.some(p => p.test(trimmed))) return true;
   if (opts.filterMetaQuestions && META_QUESTION_PATTERNS.some(p => p.test(trimmed))) return true;
   if (opts.filterBoilerplate && BOILERPLATE_PATTERNS.some(p => p.test(trimmed))) return true;
+  if (SYSTEM_MESSAGE_PATTERNS.some(p => p.test(trimmed))) return true;
+  if (INTERNAL_PROMPT_PATTERNS.some(p => p.test(trimmed))) return true;
   if (DIAGNOSTIC_ARTIFACT_PATTERNS.some(p => p.test(trimmed))) return true;
 
   return false;

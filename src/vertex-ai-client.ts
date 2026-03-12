@@ -125,6 +125,99 @@ class EmbeddingCache {
 }
 
 // ============================================================================
+// Retry with Exponential Backoff
+// ============================================================================
+
+/** HTTP status codes that should trigger a retry. */
+const RETRYABLE_STATUS_CODES = new Set([429, 500, 502, 503, 504]);
+
+interface RetryConfig {
+  /** Max number of retry attempts (default: 3) */
+  maxRetries?: number;
+  /** Base delay in ms before first retry (default: 1000) */
+  baseDelayMs?: number;
+  /** Max delay in ms (default: 10000) */
+  maxDelayMs?: number;
+  /** Optional logger */
+  log?: (msg: string) => void;
+}
+
+/**
+ * Fetch with automatic retry on transient errors.
+ * Uses exponential backoff with jitter. Respects Retry-After header.
+ */
+async function fetchWithRetry(
+  url: string,
+  options: RequestInit,
+  config: RetryConfig = {},
+): Promise<Response> {
+  const maxRetries = config.maxRetries ?? 3;
+  const baseDelayMs = config.baseDelayMs ?? 1000;
+  const maxDelayMs = config.maxDelayMs ?? 10000;
+  const log = config.log ?? (() => {});
+
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const response = await fetch(url, options);
+
+      // Success or non-retryable error — return immediately
+      if (response.ok || !RETRYABLE_STATUS_CODES.has(response.status)) {
+        return response;
+      }
+
+      // Retryable status code — check if we have retries left
+      if (attempt >= maxRetries) {
+        return response; // No more retries, let caller handle the error
+      }
+
+      // Calculate delay: exponential backoff with jitter
+      let delay = Math.min(baseDelayMs * Math.pow(2, attempt), maxDelayMs);
+
+      // Respect Retry-After header if present
+      const retryAfter = response.headers.get("Retry-After");
+      if (retryAfter) {
+        const retryAfterMs = parseInt(retryAfter, 10) * 1000;
+        if (!isNaN(retryAfterMs) && retryAfterMs > 0) {
+          delay = Math.min(retryAfterMs, maxDelayMs);
+        }
+      }
+
+      // Add jitter (±25%)
+      const jitter = delay * 0.25 * (Math.random() * 2 - 1);
+      delay = Math.round(delay + jitter);
+
+      log(
+        `[memory-lancedb-pro] Vertex AI retry ${attempt + 1}/${maxRetries} after ${response.status} (waiting ${delay}ms)`,
+      );
+
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    } catch (err) {
+      // Network error (DNS, timeout, connection refused, etc.)
+      lastError = err instanceof Error ? err : new Error(String(err));
+
+      if (attempt >= maxRetries) {
+        throw lastError;
+      }
+
+      const delay = Math.min(baseDelayMs * Math.pow(2, attempt), maxDelayMs);
+      const jitter = delay * 0.25 * (Math.random() * 2 - 1);
+      const finalDelay = Math.round(delay + jitter);
+
+      log(
+        `[memory-lancedb-pro] Vertex AI retry ${attempt + 1}/${maxRetries} after network error: ${lastError.message} (waiting ${finalDelay}ms)`,
+      );
+
+      await new Promise((resolve) => setTimeout(resolve, finalDelay));
+    }
+  }
+
+  // Should never reach here, but just in case
+  throw lastError ?? new Error("fetchWithRetry: unexpected state");
+}
+
+// ============================================================================
 
 type AuthMode =
   | { type: "gce" }
@@ -475,14 +568,18 @@ export class VertexEmbedder {
       body.parameters = { outputDimensionality: this._requestDimensions };
     }
 
-    const response = await fetch(this.endpoint, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
+    const response = await fetchWithRetry(
+      this.endpoint,
+      {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
       },
-      body: JSON.stringify(body),
-    });
+      { maxRetries: 3, log: (msg) => console.log(msg) },
+    );
 
     if (!response.ok) {
       const errorText = await response.text().catch(() => "unknown");
@@ -735,28 +832,32 @@ export function createVertexLlmClient(config: VertexLlmConfig): LlmClient {
         const timer = setTimeout(() => controller.abort(), timeoutMs);
 
         try {
-          const response = await fetch(endpoint, {
-            method: "POST",
-            headers: {
-              "Authorization": `Bearer ${accessToken}`,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              contents: [
-                {
-                  role: "user",
-                  parts: [{
-                    text: "You are a memory extraction assistant. Always respond with valid JSON only.\n\n" + prompt,
-                  }],
-                },
-              ],
-              generationConfig: {
-                temperature: 0.1,
-                responseMimeType: "application/json",
+          const response = await fetchWithRetry(
+            endpoint,
+            {
+              method: "POST",
+              headers: {
+                "Authorization": `Bearer ${accessToken}`,
+                "Content-Type": "application/json",
               },
-            }),
-            signal: controller.signal,
-          });
+              body: JSON.stringify({
+                contents: [
+                  {
+                    role: "user",
+                    parts: [{
+                      text: "You are a memory extraction assistant. Always respond with valid JSON only.\n\n" + prompt,
+                    }],
+                  },
+                ],
+                generationConfig: {
+                  temperature: 0.1,
+                  responseMimeType: "application/json",
+                },
+              }),
+              signal: controller.signal,
+            },
+            { maxRetries: 2, log },
+          );
 
           clearTimeout(timer);
 
